@@ -20,24 +20,28 @@
   "userConfig": {
     "ODOO_URL": {
       "type": "string",
-      "required": true,
-      "description": "Odoo instance URL, e.g. https://relief-center-staging-30897768.dev.odoo.com/"
+      "title": "Odoo URL",
+      "description": "Odoo instance URL, e.g. https://relief-center-staging-30897768.dev.odoo.com/",
+      "required": true
     },
     "ODOO_DB": {
       "type": "string",
-      "required": true,
-      "description": "Odoo database name, e.g. relief-center-staging-30897768"
+      "title": "Odoo database",
+      "description": "Odoo database name, e.g. relief-center-staging-30897768",
+      "required": true
     },
     "ODOO_UID": {
       "type": "string",
-      "required": true,
-      "description": "Numeric Odoo user ID to authenticate as (e.g. 67)"
+      "title": "Odoo user ID",
+      "description": "Numeric Odoo user ID to authenticate as (e.g. 67)",
+      "required": true
     },
     "ODOO_PASSWORD": {
       "type": "string",
+      "title": "Odoo password",
+      "description": "Password for the Odoo user",
       "required": true,
-      "sensitive": true,
-      "description": "Password for the Odoo user"
+      "sensitive": true
     }
   }
 }
