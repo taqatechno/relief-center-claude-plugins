@@ -103,7 +103,7 @@ Use the `Agent` tool with `subagent_type: general-purpose`. Its job: find unpubl
 > Your task: identify unpublished articles in a Relief Center news .docx file.
 >
 > 1. Run: `python <SKILL_DIR>/scripts/inspect_docx.py "<docx-path>"`
-> 2. Parse the JSON output — a list of article dicts, each with pre-extracted fields: `article_index`, `table_index`, `title_en`, `title_ar`, `author_en`, `author_ar`, `date_en`, `date_ar`, `country_en`, `country_ar`, `body_en`, `body_ar`, `status_en`, `status_ar`, `status_fill`, `is_unpublished`, `status_en_cell_index`, `status_ar_cell_index`.
+> 2. Parse the JSON output — a list of article dicts, each with pre-extracted fields: `article_index`, `table_index`, `title_en`, `title_ar`, `author_en`, `author_ar`, `date_en`, `date_ar`, `country_en`, `country_ar`, `body_en`, `body_ar`, `status_en`, `status_ar`, `status_fill`, `is_unpublished`, `status_en_cell_index`, `status_ar_cell_index`, `article_cell_indices` (list of every `<w:tc>` index inside the article's table, in document order — used by the recolor step to tint the whole article).
 > 3. Filter to entries where `is_unpublished == true` (the Status row's content cell has no fill or is explicit white).
 > 4. Return the filtered list **as-is** — don't strip or rename any fields, downstream steps need them. If no articles match, return `[]`.
 >
@@ -170,26 +170,29 @@ With v6 structured output from Agent A, Agent B's job is much lighter than befor
 
 ### Step 3 — Publish each article via XML-RPC
 
-For each Agent B result, you hold the article's `article_index`, `status_en_cell_index`, and `status_ar_cell_index` from Agent A's output in Step 1. Strip `article_index` from the Agent B dict (publish_blog_post.py doesn't expect it), and pipe the rest to the publisher:
+For each Agent B result, you hold the article's `article_index`, `status_en_cell_index`, `status_ar_cell_index`, and `article_cell_indices` from Agent A's output in Step 1. Strip `article_index` from the Agent B dict (publish_blog_post.py doesn't expect it), and pipe the rest to the publisher:
 
 ```bash
 echo '<field_dict_json_without_article_index>' | python <SKILL_DIR>/scripts/publish_blog_post.py
 ```
 
 Parse the JSON on stdout:
-- `status: "created"` or `status: "partial"` (AR translation warning) → success; queue **both** `status_en_cell_index` and `status_ar_cell_index` for recoloring
-- `status: "existing"` → the post already exists under this title; still queue both Status cell indices for recoloring (the docx should reflect reality even for duplicates)
-- Non-zero exit → log the error JSON (from stderr), do NOT queue those cells for recolor, continue with the rest
+- `status: "created"` or `status: "partial"` (AR translation warning) → success; queue every index in `article_cell_indices` for recoloring, and queue `status_en_cell_index` for the `Unpublished → Published` text rewrite
+- `status: "existing"` → the post already exists under this title; still queue `article_cell_indices` for recolor and `status_en_cell_index` for the text rewrite (the docx should reflect reality even for duplicates)
+- Non-zero exit → log the error JSON (from stderr), do NOT queue that article's cells, continue with the rest
 
-### Step 4 — Recolor the Status cells of published articles to purple
+### Step 4 — Recolor the article table and switch its Status to "Published"
 
-After all publishes complete, call `recolor_docx_cells.py` once with every queued Status cell index. Only the Status row's content cells get recolored — not every cell in the article table — because fill on the Status row is the canonical publication indicator in the v6 template.
+After all publishes complete, call `recolor_docx_cells.py` once with every queued cell index. The v6 convention for "article published" is that the **entire article table** is tinted purple — not just the Status row — so the whole article reads as done at a glance. In the same call, use `--set-text` to flip the Status cell's text from `Unpublished` to `Published`:
 
 ```bash
-python <SKILL_DIR>/scripts/recolor_docx_cells.py "<docx-path>" <status_idx_1> <status_idx_2> ...
+python <SKILL_DIR>/scripts/recolor_docx_cells.py "<docx-path>" \
+    --set-text <status_en_idx_1>=Published \
+    --set-text <status_en_idx_2>=Published \
+    <article_cell_idx_1> <article_cell_idx_2> <article_cell_idx_3> ...
 ```
 
-This flips each target cell's white fill to `#B4A7D6` (light purple) in place. If the docx is open in Word, the script will fail to overwrite — warn the user to close Word and rerun; the duplicate-title pre-flight in `publish_blog_post.py` keeps reruns safe.
+Each positional cell index gets its white fill flipped to `#B4A7D6` (light purple). Each `--set-text <idx>=<text>` entry rewrites the first `<w:t>` inside that cell (any sibling `<w:t>` runs in the same cell are blanked so the text reads cleanly). If the docx is open in Word, the script will fail to overwrite — warn the user to close Word and rerun; the duplicate-title pre-flight in `publish_blog_post.py` keeps reruns safe.
 
 ### Step 5 — Report summary to the user
 
@@ -232,8 +235,8 @@ Skill:
 2. Dispatches 3 Agent B subagents in parallel; each formats body HTML, parses date, and dispatches its own C + D for author/country resolution
 3. All 3 return complete field dicts
 4. Orchestrator publishes each via `publish_blog_post.py` → ids 130, 131, 132 created
-5. Orchestrator calls `recolor_docx_cells.py "May 2026.docx" 21 22 44 45 67 68` with the six Status cell indices → all 3 Status rows turned purple
-6. Reports: "3 articles published, 6 Status cells recolored purple" with URLs
+5. Orchestrator calls `recolor_docx_cells.py "May 2026.docx" --set-text 21=Published --set-text 44=Published --set-text 67=Published <every index in each article's article_cell_indices>` → all three article tables turn purple end-to-end and their Status rows read "Published"
+6. Reports: "3 articles published; 3 article tables recolored purple and marked Published" with URLs
 
 ### Example 2 — No unpublished articles
 
@@ -252,5 +255,5 @@ Skill:
 1. Agent A finds 2 unpublished articles
 2. One Agent B returns a valid field dict; the other can't parse its `date_en` and returns a dict missing `post_date_iso`
 3. `publish_blog_post.py` succeeds on article 1, fails on article 2 with "Missing required fields: ['post_date_iso']"
-4. Orchestrator recolors article 1's Status cells to purple, leaves article 2's Status cells white
+4. Orchestrator recolors article 1's entire table to purple and flips its Status cell to "Published"; leaves article 2's table untouched
 5. Reports: "1 published, 1 failed (couldn't parse the Date field — check the docx for that article)"

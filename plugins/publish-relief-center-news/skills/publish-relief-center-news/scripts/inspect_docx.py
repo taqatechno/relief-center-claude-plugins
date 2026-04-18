@@ -142,6 +142,14 @@ def _extract_article(
     status_en, status_ar = field_cells["status"]
     status_fill = (_cell_fill(status_en) or "").upper()
 
+    # Every <w:tc> inside this table — in document order — so the
+    # recolor step can flip the whole article table's fill in one call
+    # rather than only the Status cells. This is the v6 convention:
+    # "article published" = the entire article's table is tinted.
+    article_cell_indices = [
+        cell_index_map[id(tc)] for tc in tbl.iter(f"{W}tc")
+    ]
+
     return {
         "article_index": 0,  # caller renumbers across valid articles
         "table_index": table_idx,
@@ -150,6 +158,7 @@ def _extract_article(
         "is_unpublished": status_fill in UNPUBLISHED_FILLS,
         "status_en_cell_index": cell_index_map[id(status_en)],
         "status_ar_cell_index": cell_index_map[id(status_ar)],
+        "article_cell_indices": article_cell_indices,
     }
 
 
