@@ -51,6 +51,41 @@ The skill ships with its scripts under `scripts/` and reference docs under `refe
 
 Work from the user's project directory (where the docx lives) so the orchestrator's cwd matches the docx path argument. Credentials are supplied via plugin userConfig — see the README and the `Credentials` section below.
 
+### Step 0 — Credential check
+
+Before dispatching any agents or touching the docx, verify Odoo credentials are configured and accepted by the server:
+
+```bash
+python <SKILL_DIR>/scripts/check_credentials.py
+```
+
+The script prints a single line of JSON and exits 0 on success, 1 on failure. Handle the three cases:
+
+**`{"ok": true, "user": "...", "uid": N}`** → credentials work. Proceed to Step 1 silently (no need to mention the check to the user).
+
+**`{"ok": false, "error": "missing", "message": "..."}`** → credentials are not configured. **Stop** (do not dispatch Agent A). Tell the user verbatim:
+
+> Odoo credentials are not configured for this plugin, so I can't publish anything yet.
+>
+> Add the following to your `~/.claude/settings.json` under the `"env"` key (create the key if it doesn't exist), replacing the placeholders with your Odoo instance details, then re-invoke the skill:
+>
+> ```json
+> "env": {
+>   "ODOO_URL":      "https://<your-instance>.odoo.com/",
+>   "ODOO_DB":       "<your-database-name>",
+>   "ODOO_UID":      "<your-numeric-user-id>",
+>   "ODOO_PASSWORD": "<your-password>"
+> }
+> ```
+>
+> Alternatives:
+> - Run `/plugin config publish-relief-center-news` if you're on Claude Code (CLI).
+> - Export the four variables in your shell before invoking Claude.
+
+Then wait for the user. Do not proceed to Step 1 in the same turn.
+
+**`{"ok": false, "error": "auth_failed", "message": "..."}`** → credentials are set but Odoo rejected them (wrong password, revoked user, wrong URL, etc.). **Stop** and tell the user the server rejected the login, include the `message` from the JSON, and suggest they double-check `ODOO_URL`, `ODOO_DB`, `ODOO_UID`, and `ODOO_PASSWORD` against their Odoo instance.
+
 ### Step 1 — Dispatch Agent A (docx inspector)
 
 Use the `Agent` tool with `subagent_type: general-purpose`. Its job: find the unpublished article rows. Each article in the docx is **one row with two cells** (EN on the left, AR on the right). Pass this prompt verbatim (substitute `<docx-path>`):
