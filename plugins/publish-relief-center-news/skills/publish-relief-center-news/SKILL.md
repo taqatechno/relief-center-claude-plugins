@@ -59,32 +59,42 @@ Before dispatching any agents or touching the docx, verify Odoo credentials are 
 python <SKILL_DIR>/scripts/check_credentials.py
 ```
 
-The script prints a single line of JSON and exits 0 on success, 1 on failure. Handle the three cases:
+The script prints a single line of JSON and exits 0 on success, 1 on failure. Handle the three cases below.
 
-**`{"ok": true, "user": "...", "uid": N}`** → credentials work. Proceed to Step 1 silently (no need to mention the check to the user).
+#### Case A: `{"ok": true, "user": "...", "uid": N}`
 
-**`{"ok": false, "error": "missing", "message": "..."}`** → credentials are not configured. **Stop** (do not dispatch Agent A). Tell the user verbatim:
+Credentials work. Proceed to Step 1 silently — no need to mention the check to the user.
 
-> Odoo credentials are not configured for this plugin, so I can't publish anything yet.
->
-> Add the following to your `~/.claude/settings.json` under the `"env"` key (create the key if it doesn't exist), replacing the placeholders with your Odoo instance details, then re-invoke the skill:
->
-> ```json
-> "env": {
->   "ODOO_URL":      "https://<your-instance>.odoo.com/",
->   "ODOO_DB":       "<your-database-name>",
->   "ODOO_UID":      "<your-numeric-user-id>",
->   "ODOO_PASSWORD": "<your-password>"
-> }
-> ```
->
-> Alternatives:
-> - Run `/plugin config publish-relief-center-news` if you're on Claude Code (CLI).
-> - Export the four variables in your shell before invoking Claude.
+#### Case B: `{"ok": false, "error": "missing", ...}` — collect interactively
 
-Then wait for the user. Do not proceed to Step 1 in the same turn.
+The plugin has no credentials configured. Collect them from the user **one at a time in chat**, then save them for this and future runs. Do not dump the whole list in a single message — the user should answer each question before the next is asked.
 
-**`{"ok": false, "error": "auth_failed", "message": "..."}`** → credentials are set but Odoo rejected them (wrong password, revoked user, wrong URL, etc.). **Stop** and tell the user the server rejected the login, include the `message` from the JSON, and suggest they double-check `ODOO_URL`, `ODOO_DB`, `ODOO_UID`, and `ODOO_PASSWORD` against their Odoo instance.
+1. Tell the user: *"I need to set up Odoo credentials for this plugin — I'll ask for four values, save them locally, and then publish."*
+2. Ask: *"**1 of 4 — What's your Odoo URL?** (e.g. `https://your-instance.odoo.com/`)"* — wait for the user's reply.
+3. Ask: *"**2 of 4 — What's your Odoo database name?**"* — wait for reply.
+4. Ask: *"**3 of 4 — What's your numeric Odoo user ID?** (the integer `uid` from your Odoo profile, e.g. `67`)"* — wait for reply.
+5. Ask: *"**4 of 4 — What's your Odoo password?**"* — wait for reply.
+6. Once all four are collected, save them. Because the password may contain shell metacharacters, **do not use inline `echo '...' | python save_credentials.py`** — instead:
+    a. Use the `Write` tool to create a temp file `~/.claude-cred-tmp.json` with this exact content (fill in the four values verbatim):
+        ```json
+        {"url": "<URL>", "db": "<DB>", "uid": "<UID>", "password": "<PASSWORD>"}
+        ```
+    b. Pipe that file into the saver and remove it:
+        ```bash
+        python <SKILL_DIR>/scripts/save_credentials.py < ~/.claude-cred-tmp.json && rm ~/.claude-cred-tmp.json
+        ```
+    The saver writes the values into `~/.claude/odoo-credentials.json` in the nested shape `odoo_client` expects. The temp file is removed immediately so the password doesn't linger on disk in a second location.
+7. Re-run `python <SKILL_DIR>/scripts/check_credentials.py`. If the second check returns `{"ok": true}`, tell the user: *"Credentials saved. Authenticated as `<user>`. Proceeding to publish."* — and go to Step 1. If it returns `{"ok": false}` again, show the error message and ask the user which field to re-enter (repeat the flow for only the affected field, then call `save_credentials.py` again).
+
+**Do not echo the password back to the user in your response text.** Acknowledge that it was collected and saved — do not include the value in confirmations, summaries, or any other output.
+
+#### Case C: `{"ok": false, "error": "auth_failed", ...}` — server rejected the login
+
+Credentials exist but Odoo rejected them. Tell the user, include the `message` from the JSON, and offer to re-collect:
+
+> Odoo rejected the login. Server message: `<message>`. The credentials on file may be out of date — if you want, I can walk through the four prompts again to replace them.
+
+If the user agrees, run the interactive collection flow from Case B. The saver will overwrite the stale values.
 
 ### Step 1 — Dispatch Agent A (docx inspector)
 

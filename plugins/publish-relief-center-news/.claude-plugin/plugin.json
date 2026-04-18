@@ -1,7 +1,7 @@
 {
   "name": "publish-relief-center-news",
   "description": "Publish unpublished bilingual (English + Arabic) news articles from a Relief Center news .docx file into the Odoo Latest News blog, and recolor the published cells purple. Handles the full pipeline: docx row inspection, field extraction, author/country fuzzy resolution, JSON-RPC create + Arabic translation writes, and in-place docx recolor.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "author": {
     "name": "Shafiq Belaroussi",
     "email": "shafiqbelaroussi@taqatechno.com"

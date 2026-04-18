@@ -90,6 +90,17 @@ def _discover_credentials_path() -> Path:
         )
 
     checked: list[Path] = []
+
+    # 1) The file the skill's interactive Step 0 writes to. This is the
+    #    canonical location for credentials collected in chat, reachable
+    #    regardless of where the user invokes the skill from.
+    home_path = Path.home() / ".claude" / CREDENTIALS_FILENAME
+    checked.append(home_path)
+    if home_path.is_file():
+        return home_path
+
+    # 2) Walk up from cwd to catch project-local credential files (the
+    #    original dev-mode discovery path, still supported).
     for parent in [Path.cwd(), *Path.cwd().parents]:
         candidate = parent / CREDENTIALS_FILENAME
         checked.append(candidate)
@@ -99,8 +110,9 @@ def _discover_credentials_path() -> Path:
     raise CredentialsNotFound(
         "No Odoo credentials found. Set the plugin userConfig (ODOO_URL, "
         "ODOO_DB, ODOO_UID, ODOO_PASSWORD) via `/plugin config`, export "
-        "those env vars, or place odoo-credentials.json somewhere above "
-        "cwd. Paths checked for the file:\n  "
+        "those env vars, or let the skill's Step 0 prompt you to enter "
+        "them interactively (they'll be saved to ~/.claude/"
+        "odoo-credentials.json). Paths checked for the file:\n  "
         + "\n  ".join(str(p) for p in checked)
     )
 
