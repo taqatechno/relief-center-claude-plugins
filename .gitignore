@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~
+
+# Environment / secrets
+.env
+.env.local
+odoo-credentials.json
+
+# Claude Code local overrides (if this repo is ever opened as a workspace)
+.claude/settings.local.json

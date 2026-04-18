@@ -1,0 +1,18 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "relief-center-claude-plugins",
+  "description": "Claude Code plugins for Relief Center's Odoo CMS workflows.",
+  "owner": {
+    "name": "Shafiq Belaroussi",
+    "email": "shafiqbelaroussi@taqatechno.com"
+  },
+  "plugins": [
+    {
+      "name": "publish-relief-center-news",
+      "description": "Publish unpublished bilingual (English + Arabic) news articles from the monthly news .docx into the Odoo Latest News blog; recolor published cells purple.",
+      "category": "productivity",
+      "source": "./plugins/publish-relief-center-news",
+      "version": "1.0.0"
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  "name": "publish-relief-center-news",
+  "description": "Publish unpublished bilingual (English + Arabic) news articles from a Relief Center news .docx file into the Odoo Latest News blog, and recolor the published cells purple. Handles the full pipeline: docx row inspection, field extraction, author/country fuzzy resolution, JSON-RPC create + Arabic translation writes, and in-place docx recolor.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Shafiq Belaroussi",
+    "email": "shafiqbelaroussi@taqatechno.com"
+  },
+  "keywords": [
+    "odoo",
+    "cms",
+    "relief-center",
+    "bilingual",
+    "arabic",
+    "english",
+    "blog",
+    "docx",
+    "publishing"
+  ],
+  "userConfig": {
+    "ODOO_URL": {
+      "type": "string",
+      "required": true,
+      "description": "Odoo instance URL, e.g. https://relief-center-staging-30897768.dev.odoo.com/"
+    },
+    "ODOO_DB": {
+      "type": "string",
+      "required": true,
+      "description": "Odoo database name, e.g. relief-center-staging-30897768"
+    },
+    "ODOO_UID": {
+      "type": "string",
+      "required": true,
+      "description": "Numeric Odoo user ID to authenticate as (e.g. 67)"
+    },
+    "ODOO_PASSWORD": {
+      "type": "string",
+      "required": true,
+      "sensitive": true,
+      "description": "Password for the Odoo user"
+    }
+  }
+}
