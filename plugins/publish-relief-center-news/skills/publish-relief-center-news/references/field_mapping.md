@@ -56,31 +56,21 @@ Verified working via `scripts/publish_blog_post.py` (which reuses the pattern fr
 
 **Important read-back caveat (for verification):** the `odoo-mcp-nextjs` MCP's `smartSearch` does NOT forward `context.lang` — it always returns the default-language value. To read the Arabic title for verification, use the skill's own `odoo_client.py` XML-RPC helper with `{"context": {"lang": "ar_001"}}`.
 
-## Body parsing hints for Agent B
+## Input to Agent B (v6 template)
 
-Each article cell in the docx contains both language versions, in this typical order:
+With the v6 template, `inspect_docx.py` has already parsed each article table into discrete fields before Agent B runs. Agent B receives a per-article dict with: `title_en`, `title_ar`, `author_en`, `author_ar`, `date_en`, `date_ar`, `country_en`, `country_ar`, `body_en`, `body_ar`, and the Status cell indices. No raw concatenated text, no label-string parsing, no byline-splitting needed.
 
-```
-News No.: 1
-Title: <English title line>
-Country / Countries: <International | Global | country names>
-News details:                   ← or "News Text:" — both appear
-<Author Name> |<English body paragraph 1>
-<English body paragraph 2>
-…
-خبر رقم: 1
-العنوان: <Arabic title line>
-الدولة / الدول: <دولي | عالمي | country names in Arabic>
-نص الخبر:
-<Arabic Author Name> |<Arabic body paragraph 1>
-<Arabic body paragraph 2>
-…
-```
+Agent B's remaining work is formatting, not parsing:
 
-- The **byline** is the author name string, directly followed by ` |` (space + pipe) at the start of the first body paragraph. Spacing/casing varies across articles ("Al Kahlout" / "AlKahlout" / "Alkahlout") which is why author resolution is fuzzy.
-- The **date** appears either as its own `Date: …` / `التاريخ: …` line OR in a preceding blue-fill separator row (`5/ابريل/2026`) — prefer the in-cell `Date:` line if present, else parse the preceding separator.
-- The **country** line is labeled `Country / Countries:` (EN) or `الدولة / الدول:` / `الدولة:` (AR). Use either or both to cross-check; prefer English form for the res.country fuzzy match but fall back to Arabic if EN is absent.
-- **HTML conversion**: split body on blank lines (double newline). For each paragraph, wrap as `<p style="text-align: justify;">…</p>`. For the first paragraph, wrap the byline portion (author name + ` |`) in `<strong>…</strong>` so it renders bold like existing posts (see id 110's stored HTML for the exact shape).
+- **Author** is already in `author_en` / `author_ar`. Use it verbatim in the byline — spacing and casing are whatever the user wrote in the Author row. Fuzzy resolution against `res.partner` still happens because names in Odoo may not match the docx spelling (e.g. "Dr. Ola Alkahlout" vs "Ola Alkahlout" in Odoo), but Agent B doesn't have to extract the name — it just passes `author_en` to the author resolver.
+- **Date** is already in `date_en` (e.g. `"15 April 2026"`). Parse this to `"YYYY-MM-DD HH:MM:SS"` for `post_date_iso`. If `date_en` is an unparseable placeholder (e.g. the template default `"[DD Month YYYY]"`), fall back to `date_ar` and infer from Arabic month names.
+- **Country** is already in `country_en`. Pass it to the country resolver as-is — the resolver normalizes `International`/`Global`/`دولي`/`عالمي` to an empty list and fuzzy-matches anything else.
+- **HTML conversion** (the only non-trivial LLM task):
+  - `body_en` arrives as plain text with paragraphs separated by `\n`. Split on `\n` (or blank lines, whichever the docx uses), wrap each paragraph in `<p style="text-align: justify;">…</p>`.
+  - The first `<p>` additionally carries `data-oe-version="2.0"` and its content starts with `<strong>{author_en} |&nbsp;</strong><br>` followed immediately by the first paragraph's text, so the byline renders on its own line. Example:
+    `<p style="text-align: justify;" data-oe-version="2.0"><strong>Dr. Ola Alkahlout |&nbsp;</strong><br>Recent developments across…</p>`
+  - Same pattern for `body_ar` using `author_ar`. Do NOT add `dir="rtl"` — Odoo's theme handles direction.
+  - See `references/body_html_template.md` for the exact HTML conventions (smart quotes, em-dashes, list formatting).
 
 ## Country string → country_ids special cases
 

@@ -1,39 +1,60 @@
 """
-Walk every table row in a .docx file and emit its cells as "article units".
+Extract structured article data from a v6 Relief Center news .docx.
 
-Each news article in the Relief Center bilingual docx is one table ROW with
-two cells: the left cell carries the English half, the right cell carries
-the Arabic mirror. Both cells share the same fill color, which encodes the
-article's publication status (white = unpublished, green = manually
-published, purple = AI-published by this skill).
+Template shape (v6):
 
-This script groups cells by row, identifies which rows are real articles
-(vs. template header rows, column labels, date separators, or empty
-trailing rows), and emits a JSON list keyed to rows. Agent A in the
-publish-relief-center-news skill consumes this and filters to unpublished
-article rows.
+    Each article is its own table with 6 labeled field rows — the label
+    text in cell[0] identifies the field, cell[1] is the English value,
+    cell[2] is the Arabic value. A monthly docx holds one such table
+    per article.
+
+      cell[0] label   cell[1] EN              cell[2] AR
+      -------------   --------------------    --------------------
+      "Title"         English title           Arabic title
+      "Author"        Author name EN          Author name AR
+      "Date"          "15 April 2026"         "15 أبريل 2026"
+      "Country"       "International"         "دولي"
+      "Body"          English body text       Arabic body text
+      "Status"        "Unpublished"           ""
+
+    Publication state is encoded in the Status row's content-cell fill:
+    white (#FFFFFF or no fill) means unpublished, any non-white fill
+    (green = manually published, purple = published by this skill)
+    means published and the table should be skipped.
+
+The script walks every <w:tbl> in the document. A table is only treated
+as a v6 article when all six labeled rows are present (structural tables
+like headers or cover pages are ignored automatically).
+
+Output: JSON list, one element per valid v6 article, shape:
+
+    {
+      "article_index": 0,           # 0-based, sequential among valid articles
+      "table_index": 0,             # position among all <w:tbl> in the docx
+      "title_en": "...",
+      "title_ar": "...",
+      "author_en": "...",
+      "author_ar": "...",
+      "date_en": "15 April 2026",
+      "date_ar": "15 أبريل 2026",
+      "country_en": "International",
+      "country_ar": "دولي",
+      "body_en": "full body text with \\n between paragraphs",
+      "body_ar": "full Arabic body text",
+      "status_en": "Unpublished",
+      "status_ar": "",
+      "status_fill": "FFFFFF",      # EN status cell fill, uppercased, or ""
+      "is_unpublished": true,       # derived from status_fill
+      "status_en_cell_index": 21,   # document-order w:tc index of EN status cell
+      "status_ar_cell_index": 22    # document-order w:tc index of AR status cell
+    }
+
+`status_en_cell_index` / `status_ar_cell_index` are the cells that
+`recolor_docx_cells.py` should flip white → purple once a post is
+published, so the docx stays in sync with reality.
 
 Usage:
     python inspect_docx.py <docx_path>
-
-Output (JSON list, one entry per row in document order):
-    [
-      {
-        "row_index": 3,
-        "en_cell_index": 5,
-        "ar_cell_index": 6,
-        "fill": "D9F2D0",            # hex, or null; fills of EN and AR cells match on articles
-        "en_text": "News No.: 1\\n...",
-        "ar_text": "خبر رقم: 1\\n...",
-        "is_article": true
-      },
-      ...
-    ]
-
-Rows that aren't articles (template header, column labels, date separator
-strips, empty rows) still appear in the output with `is_article: false` so
-callers can see the full table. Only use `is_article: true` entries for
-publishing decisions.
 """
 from __future__ import annotations
 
@@ -48,13 +69,24 @@ from xml.etree import ElementTree as ET
 W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
 W = f"{{{W_NS}}}"
 
-# Body-content markers. Real articles always contain a body, and the body
-# is introduced by one of these markers. Template header rows carry the
-# label strings ("News No.:", "Title:", etc.) but not these body markers,
-# which cleanly distinguishes template from content without length
-# heuristics.
-EN_BODY_MARKERS = ("News details:", "News Text:")
-AR_BODY_MARKERS = ("نص الخبر:",)
+# Exact label strings in cell[0] of a field row → the snake_case key we
+# expose in the output JSON. The template uses English labels for all
+# rows (including on Arabic-content rows) so this mapping is stable.
+FIELD_LABELS: dict[str, str] = {
+    "Title":   "title",
+    "Author":  "author",
+    "Date":    "date",
+    "Country": "country",
+    "Body":    "body",
+    "Status":  "status",
+}
+
+REQUIRED_KEYS = set(FIELD_LABELS.values())
+
+# Status row cell fills that mean "unpublished" — no fill, empty string,
+# or explicit white. Anything else (green, purple, etc.) means the
+# article is already published.
+UNPUBLISHED_FILLS = {"", "FFFFFF"}
 
 
 def _cell_fill(cell: ET.Element) -> str | None:
@@ -68,6 +100,8 @@ def _cell_fill(cell: ET.Element) -> str | None:
 
 
 def _cell_text(cell: ET.Element) -> str:
+    """All paragraphs in a cell, joined by \\n. Preserves inline run
+    splits within a paragraph."""
     parts: list[str] = []
     for para in cell.iter(f"{W}p"):
         run_texts = [t.text for t in para.iter(f"{W}t") if t.text]
@@ -76,66 +110,69 @@ def _cell_text(cell: ET.Element) -> str:
     return "\n".join(parts)
 
 
-def _has_any(text: str, markers: tuple[str, ...]) -> bool:
-    return any(m in text for m in markers)
+def _extract_article(
+    tbl: ET.Element,
+    table_idx: int,
+    cell_index_map: dict[int, int],
+) -> dict | None:
+    """Pull a v6 article out of a table, or return None if the table
+    doesn't have the full set of six labeled field rows."""
+    fields: dict[str, str] = {}
+    field_cells: dict[str, tuple[ET.Element, ET.Element]] = {}
+
+    for tr in tbl.findall(f"{W}tr"):
+        cells = list(tr.findall(f"{W}tc"))
+        if len(cells) != 3:
+            continue
+        label = _cell_text(cells[0]).strip()
+        key = FIELD_LABELS.get(label)
+        if not key:
+            continue
+        fields[f"{key}_en"] = _cell_text(cells[1]).strip()
+        fields[f"{key}_ar"] = _cell_text(cells[2]).strip()
+        field_cells[key] = (cells[1], cells[2])
+
+    # A table isn't a v6 article unless every labeled row is present.
+    # Skipping partial/structural tables silently keeps the extractor
+    # robust to cover pages, tables of contents, etc. that might share
+    # the document.
+    if set(field_cells.keys()) != REQUIRED_KEYS:
+        return None
+
+    status_en, status_ar = field_cells["status"]
+    status_fill = (_cell_fill(status_en) or "").upper()
+
+    return {
+        "article_index": 0,  # caller renumbers across valid articles
+        "table_index": table_idx,
+        **fields,
+        "status_fill": status_fill,
+        "is_unpublished": status_fill in UNPUBLISHED_FILLS,
+        "status_en_cell_index": cell_index_map[id(status_en)],
+        "status_ar_cell_index": cell_index_map[id(status_ar)],
+    }
 
 
 def inspect(docx_path: Path) -> list[dict]:
     with zipfile.ZipFile(docx_path) as z:
         with z.open("word/document.xml") as fh:
             tree = ET.parse(fh)
-
     root = tree.getroot()
 
-    # First pass: assign a stable cell_index in document order (matches
-    # what recolor_docx_cells.py uses, which walks w:tc in the same order).
-    cell_index_by_element: dict[int, int] = {}
-    for idx, cell in enumerate(root.iter(f"{W}tc")):
-        cell_index_by_element[id(cell)] = idx
+    # Document-order index of every <w:tc>. These indices are the handle
+    # recolor_docx_cells.py uses to locate cells for in-place rewrite,
+    # so we stamp them here while we still have element identity.
+    cell_index_map = {
+        id(cell): idx for idx, cell in enumerate(root.iter(f"{W}tc"))
+    }
 
-    rows: list[dict] = []
-    row_index = 0
-    for tr in root.iter(f"{W}tr"):
-        cells = list(tr.findall(f"{W}tc"))
-        if not cells:
-            continue
-
-        # For article rows we expect exactly 2 cells (left=EN, right=AR).
-        # Rows with 1 cell (date separators, merged headers) or other counts
-        # are valid but not article candidates.
-        en_cell = cells[0] if len(cells) >= 1 else None
-        ar_cell = cells[1] if len(cells) >= 2 else None
-
-        en_text = _cell_text(en_cell) if en_cell is not None else ""
-        ar_text = _cell_text(ar_cell) if ar_cell is not None else ""
-
-        is_article = (
-            len(cells) == 2
-            and _has_any(en_text, EN_BODY_MARKERS)
-            and _has_any(ar_text, AR_BODY_MARKERS)
-        )
-
-        fill_en = _cell_fill(en_cell) if en_cell is not None else None
-        fill_ar = _cell_fill(ar_cell) if ar_cell is not None else None
-        # If the two cells disagree on fill (shouldn't happen on articles,
-        # but the docx could drift), surface it as the EN fill — the EN cell
-        # is the canonical one since orchestrator publishes from EN primary.
-        fill = fill_en if fill_en == fill_ar else fill_en
-
-        rows.append({
-            "row_index": row_index,
-            "en_cell_index": cell_index_by_element.get(id(en_cell)) if en_cell is not None else None,
-            "ar_cell_index": cell_index_by_element.get(id(ar_cell)) if ar_cell is not None else None,
-            "fill": fill,
-            "fill_en": fill_en,
-            "fill_ar": fill_ar,
-            "en_text": en_text,
-            "ar_text": ar_text,
-            "is_article": is_article,
-        })
-        row_index += 1
-
-    return rows
+    articles: list[dict] = []
+    for table_idx, tbl in enumerate(root.iter(f"{W}tbl")):
+        article = _extract_article(tbl, table_idx, cell_index_map)
+        if article is not None:
+            article["article_index"] = len(articles)
+            articles.append(article)
+    return articles
 
 
 def main() -> int:
@@ -150,8 +187,8 @@ def main() -> int:
         sys.stderr.write(f"file not found: {path}\n")
         return 2
 
-    rows = inspect(path)
-    print(json.dumps(rows, ensure_ascii=False, indent=2))
+    articles = inspect(path)
+    print(json.dumps(articles, ensure_ascii=False, indent=2))
     return 0
 
 
