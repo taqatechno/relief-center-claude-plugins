@@ -137,24 +137,25 @@ With structured output from Agent A, Agent B's job is much lighter than before: 
 > - `body_ar_html`: same pattern using `author_ar` and `body_ar`. Do NOT add `dir="rtl"` — Odoo's theme handles direction.
 > - `post_date_iso`: the article's date in `"YYYY-MM-DD HH:MM:SS"` format. Parse `date_en` (e.g. "15 April 2026" → "2026-04-15 00:00:00"). Time can be 00:00:00. If `date_en` is unparseable, fall back to `date_ar` and infer from Arabic month names.
 >
-> Then dispatch two subagents **in parallel** (single message, two Agent tool calls):
+> Then dispatch one subagent to resolve both author and country against Odoo (subagent_type: general-purpose):
 >
-> **Author resolver** (subagent_type: general-purpose):
-> > Given the author name `<author_en>`, resolve it to an Odoo `res.partner` id.
+> **Odoo Resolver** (resolves author + country together):
+> > Given author_en = `<author_en>` and country_en = `<country_en>`, resolve both to Odoo record IDs.
 > >
+> > **Author resolution:**
 > > 1. Run: `python <SKILL_DIR>/scripts/odoo_search.py res.partner "<author_en>"`
-> > 2. Parse JSON. If the top candidate's `similarity >= 0.60`, return `{"author_id": <top.id>, "matched_name": <top.name>, "confidence": <top.similarity>}`.
-> > 3. Otherwise return `{"author_id": 79, "matched_name": "Shafiq Belaroussi (fallback)", "confidence": 0}`. Partner 79 is the current authenticated user's partner — the safe default.
->
-> **Country resolver** (subagent_type: general-purpose):
-> > Given the country string `<country_en>`, resolve it to a list of Odoo `res.country` ids.
+> > 2. Parse JSON. If the top candidate's `similarity >= 0.60`, use its id and name.
+> > 3. Otherwise use author_id: 79 (Shafiq Belaroussi, fallback).
 > >
-> > 1. Normalize: if the trimmed string (case-insensitive) is `International`, `Global`, `Worldwide`, `دولي`, or `عالمي`, return `{"country_ids": []}` and stop.
-> > 2. Otherwise split on commas and `/`. For each token, run: `python <SKILL_DIR>/scripts/odoo_search.py res.country "<token>"`
-> > 3. For each search, if the top candidate has `similarity >= 0.60`, include its id. Drop tokens with no confident match.
-> > 4. Return `{"country_ids": [id1, id2, ...], "skipped": [unmatched_tokens]}`.
+> > **Country resolution:**
+> > 1. Normalize: if the trimmed string (case-insensitive) is `International`, `Global`, `Worldwide`, `دولي`, or `عالمي`, set country_ids to `[]` and stop.
+> > 2. Otherwise split on commas and `/`. For each token:
+> >    - Run: `python <SKILL_DIR>/scripts/odoo_search.py res.country "<token>"`
+> >    - If the top candidate has `similarity >= 0.60`, include its id.
+> > 3. Return country_ids as a list of matched ids (empty for global).
+> >
+> > Return both results in one dict and merge into the final article dict:
 >
-> Merge the two resolver results into the final JSON field dict and return it:
 > ```json
 > {
 >   "article_index": <int>,
@@ -261,8 +262,8 @@ Read `references/field_mapping.md` for:
 | Agent A returns `[]` (no articles with unpublished Status) | Orchestrator reports and exits. No other agents spawned. |
 | `publish_blog_post.py` returns `status: "existing"` for a title already in Latest News | Skill still queues that article's Status cells for recoloring — the docx should match reality. |
 | AR title translation write fails (EN post created OK) | `publish_blog_post.py` returns `status: "partial"` with a `warning` string. Skill treats it as published and continues. User can fix the AR title in Odoo UI. |
-| Agent C (author resolver) finds no match ≥60% | Returns `author_id: 79` (current user's partner); orchestrator proceeds normally. |
-| Agent D (country resolver) finds no confident matches | Returns `country_ids: []`; matches the existing convention on most posts. |
+| Agent C (Odoo resolver) finds no author match ≥60% | Returns `author_id: 79` (current user's partner); proceeds normally. |
+| Agent C (Odoo resolver) finds no confident country matches | Returns `country_ids: []`; matches the existing convention on most posts. |
 | `recolor_docx_cells.py` fails (e.g., file locked by Word) | Posts exist in Odoo but docx unchanged. Warn user to close Word and rerun — the duplicate-title pre-flight keeps a rerun idempotent. |
 | Step 3 publish fails: shell quoting error (exit 2, "unexpected EOF while looking for matching `'`") | **Use `orchestrate_publish.py` helper script** (handles OS detection + temp file management automatically) or manually write JSON to `tempfile.gettempdir()/rc_article_<idx>.json`, then pipe: `python publish_blog_post.py < <temp_file>`. Never use `echo '...' \| python ...` — shell single-quotes break on apostrophes in body text. See Step 3 for details. |
 | Credentials not found | Scripts raise `CredentialsNotFound`. Tell the user to set the plugin's userConfig (ODOO_URL, ODOO_DB, ODOO_UID, ODOO_PASSWORD) via `/plugin config`, or export those env vars in their shell. |
@@ -274,8 +275,8 @@ Read `references/field_mapping.md` for:
 User: `/publish-relief-center-news "examples/content/news/May 2026.docx"`
 
 Skill:
-1. Agent A runs `inspect_docx.py`, returns 3 articles with `is_unpublished: true` and all v6 fields pre-extracted (title/author/date/country/body for EN & AR, plus Status cell indices)
-2. Dispatches 3 Agent B subagents in parallel; each formats body HTML, parses date, and dispatches its own C + D for author/country resolution
+1. Agent A runs `inspect_docx.py`, returns 3 articles with status_en = "Unpublished" and all fields pre-extracted (title/author/date/country/body for EN & AR, plus Status cell indices)
+2. Dispatches 3 Agent B subagents in parallel; each formats body HTML, parses date, and dispatches one Odoo Resolver (Agent C) for author/country resolution
 3. All 3 return complete field dicts
 4. Orchestrator publishes each via `publish_blog_post.py` → ids 130, 131, 132 created
 5. Orchestrator calls `recolor_docx_cells.py "May 2026.docx" --set-text 21=Published --set-text 44=Published --set-text 67=Published <every index in each article's article_cell_indices>` → all three article tables turn purple end-to-end and their Status rows read "Published"
@@ -286,7 +287,7 @@ Skill:
 User: `/publish-relief-center-news "examples/content/news/April 2026.docx"` (every article's Status row is already green or purple)
 
 Skill:
-1. Agent A returns `[]` (no articles where `is_unpublished == true`)
+1. Agent A returns `[]` (no articles where status_en = "Unpublished")
 2. Skill reports: "No unpublished articles in April 2026.docx — every Status row is already green (manual) or purple (AI)."
 3. No subagents spawned. No Odoo calls made.
 
