@@ -100,16 +100,15 @@ If the user agrees, run the interactive collection flow from Case B. The saver w
 
 ### Step 1 — Dispatch Agent A (docx inspector)
 
-Use the `Agent` tool with `subagent_type: general-purpose`. Its job: find unpublished articles in the docx. Each article is its own **table** with six labeled field rows (Title, Author, Date, Country, Body, Status). Publication state is encoded in the Status row text: "Unpublished" means the article needs publishing. Pass this prompt verbatim (substitute `<docx-path>`):
+Use the `Agent` tool with `subagent_type: general-purpose`. Its job: extract unpublished articles from the docx. The `inspect_docx.py` script handles filtering automatically — it only outputs articles where `status_en == "Unpublished"`. Pass this prompt verbatim (substitute `<docx-path>`):
 
-> Your task: identify unpublished articles in a Relief Center news .docx file.
+> Your task: extract unpublished articles from a Relief Center news .docx file.
 >
 > 1. Run: `python <SKILL_DIR>/scripts/inspect_docx.py "<docx-path>"`
-> 2. Parse the JSON output — a list of article dicts, each with pre-extracted fields: `article_index`, `title_en`, `title_ar`, `author_en`, `date_en`, `country_en`, `body_en`, `body_ar`, `status_en`, `status_en_cell_index`, `status_ar_cell_index`, `article_cell_indices` (list of every `<w:tc>` index inside the article's table, in document order — used by the recolor step to tint the whole article).
-> 3. Filter to entries where `status_en` equals "Unpublished" (the article has not yet been published).
-> 4. Return the filtered list **as-is** — don't strip or rename any fields, downstream steps need them. If no articles match, return `[]`.
+> 2. Parse the JSON output — a list of unpublished article dicts, each with fields: `article_index`, `title_en`, `title_ar`, `author_en`, `date_en`, `country_en`, `body_en`, `body_ar`, `status_en`, `status_en_cell_index`, `status_ar_cell_index`, `article_cell_indices` (list of every `<w:tc>` index inside the article's table, in document order — used by the recolor step to tint the whole article).
+> 3. Return the list **as-is** — don't strip or rename any fields, downstream steps need them. If the list is empty, return `[]`.
 >
-> Do NOT publish anything; your only job is discovery.
+> Do NOT publish anything; your only job is extraction.
 
 Parse the returned list. If it's empty, tell the user "No unpublished articles in `<docx-path>`." and stop — don't dispatch any more agents.
 
