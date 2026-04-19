@@ -1,11 +1,11 @@
 """
-Create one blog.post in Odoo Latest News from a JSON field dict on stdin.
+Create one blog.post in Odoo Latest News from a JSON field dict.
 
 Used by the main orchestrator of the publish-relief-center-news skill.
 Reads credentials via odoo_client.load_credentials (auto-discovered) and
 talks to /xmlrpc/2/object directly — no MCP.
 
-Input (stdin, JSON):
+Input (file path argument or stdin, JSON):
     {
         "title_en":       "English title",
         "title_ar":       "العنوان العربي",
@@ -15,6 +15,10 @@ Input (stdin, JSON):
         "author_id":      42,                      # int (res.partner id)
         "country_ids":    [110, 221]               # list of res.country ids; may be []
     }
+
+Usage:
+    python publish_blog_post.py /path/to/article.json    # Read from file
+    python publish_blog_post.py < /path/to/article.json  # Read from stdin
 
 Output (stdout, JSON):
     {"status": "created",  "id": 123, "url": "https://.../blog/latest-news-14/...-123"}
@@ -231,26 +235,41 @@ def main() -> int:
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
 
-    # Read stdin as raw bytes and decode UTF-8 explicitly. On Windows, the
-    # default sys.stdin.read() uses the locale codec (often cp1252) and can
-    # inject surrogates for undecodable bytes, which later crashes the
-    # JSON-RPC request body encoder. Going through stdin.buffer sidesteps
-    # all that and matches the UTF-8 the payload file was written in.
-    raw_bytes = sys.stdin.buffer.read()
+    # Read JSON from file argument or stdin
+    if len(sys.argv) > 1:
+        # File path provided as argument
+        file_path = sys.argv[1]
+        try:
+            with open(file_path, "rb") as f:
+                raw_bytes = f.read()
+        except FileNotFoundError:
+            _print_err({"error": "file not found", "path": file_path})
+            return 2
+        except Exception as exc:
+            _print_err({"error": f"failed to read file: {exc}", "path": file_path})
+            return 2
+    else:
+        # Read from stdin (backward compatible)
+        # On Windows, the default sys.stdin.read() uses the locale codec
+        # (often cp1252) and can inject surrogates for undecodable bytes,
+        # which crashes the JSON-RPC encoder. Going through stdin.buffer
+        # sidesteps this and uses UTF-8 directly.
+        raw_bytes = sys.stdin.buffer.read()
+
     if not raw_bytes.strip():
-        _print_err({"error": "no JSON payload on stdin"})
+        _print_err({"error": "no JSON payload provided"})
         return 2
 
     try:
         raw = raw_bytes.decode("utf-8")
     except UnicodeDecodeError as exc:
-        _print_err({"error": "stdin not valid UTF-8", "detail": str(exc)})
+        _print_err({"error": "payload not valid UTF-8", "detail": str(exc)})
         return 2
 
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
-        _print_err({"error": "invalid JSON on stdin", "detail": str(exc)})
+        _print_err({"error": "invalid JSON", "detail": str(exc)})
         return 2
 
     try:

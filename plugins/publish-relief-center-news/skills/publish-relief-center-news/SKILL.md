@@ -171,7 +171,7 @@ With structured output from Agent A, Agent B's job is much lighter than before: 
 
 ### Step 3 — Publish each article via XML-RPC
 
-For each Agent B result, you hold the article's `article_index`, `status_en_cell_index`, `status_ar_cell_index`, and `article_cell_indices` from Agent A's output in Step 1. Strip `article_index` from the Agent B dict (publish_blog_post.py doesn't expect it), then publish via file redirection (never via `echo` pipe, which breaks on apostrophes in body text).
+For each Agent B result, you hold the article's `article_index`, `status_en_cell_index`, `status_ar_cell_index`, and `article_cell_indices` from Agent A's output in Step 1. Strip `article_index` from the Agent B dict (publish_blog_post.py doesn't expect it), then publish by writing the JSON to a temp file and passing it as an argument.
 
 **CRITICAL: Detect OS and use appropriate temp directory:**
 
@@ -181,23 +181,22 @@ import tempfile
 import json
 import subprocess
 import os
+import sys
 
 # Get OS-appropriate temp directory
 temp_dir = tempfile.gettempdir()  # e.g., C:\Users\...\AppData\Local\Temp on Windows
 temp_file = os.path.join(temp_dir, f'rc_article_{article_index}.json')
 
-# Write JSON to temp file using Python (handles encoding properly)
+# Write JSON to temp file using Python (handles UTF-8 encoding properly)
 with open(temp_file, 'w', encoding='utf-8') as f:
     json.dump(field_dict, f)
 
-# Pipe from file (works on all platforms)
-with open(temp_file, 'r', encoding='utf-8') as f:
-    result = subprocess.run(
-        [sys.executable, '<SKILL_DIR>/scripts/publish_blog_post.py'],
-        stdin=f,
-        capture_output=True,
-        text=True
-    )
+# Call script with file path as argument (no shell quoting issues)
+result = subprocess.run(
+    [sys.executable, '<SKILL_DIR>/scripts/publish_blog_post.py', temp_file],
+    capture_output=True,
+    text=True
+)
 
 # Clean up
 os.remove(temp_file)
@@ -206,17 +205,18 @@ publish_result = json.loads(result.stdout)
 
 #### On Linux/macOS (or in a pure POSIX environment):
 ```bash
-# Still use temp file approach — it's safer and more portable
-python -c "import json; json.dump({...}, open('/tmp/rc_article_<idx>.json', 'w'))" && \
-python <SKILL_DIR>/scripts/publish_blog_post.py < /tmp/rc_article_<idx>.json && \
-rm /tmp/rc_article_<idx>.json
+# Write JSON to temp file, call script with file path, then clean up
+temp_file="/tmp/rc_article_${article_idx}.json"
+python -c "import json; json.dump({...}, open('$temp_file', 'w'), ensure_ascii=False)" && \
+python <SKILL_DIR>/scripts/publish_blog_post.py "$temp_file" && \
+rm "$temp_file"
 ```
 
-**Why the temp file approach:**
-- Shell `echo '...' | python` breaks on apostrophes in article body text (e.g., "donors' awareness", "system's ability")
+**Why this approach:**
+- No shell quoting issues — apostrophes in article body text don't break anything
 - `tempfile.gettempdir()` returns the OS-appropriate temp directory (Windows or POSIX)
-- File redirection via `<` works identically on Windows bash (Git Bash, WSL) and POSIX
-- `publish_blog_post.py` already reads `sys.stdin.buffer` as UTF-8 — file redirection works perfectly
+- File path argument is explicit and works identically on all platforms
+- `publish_blog_post.py` reads UTF-8 directly from the file, no encoding surprises
 
 Parse the JSON on stdout:
 - `status: "created"` or `status: "partial"` (AR translation warning) → success; queue every index in `article_cell_indices` for recoloring, and queue `status_en_cell_index` for the `Unpublished → Published` text rewrite
@@ -264,7 +264,7 @@ Read `references/field_mapping.md` for:
 | Agent C (Odoo resolver) finds no author match ≥60% | Returns `author_id: 79` (current user's partner); proceeds normally. |
 | Agent C (Odoo resolver) finds no confident country matches | Returns `country_ids: []`; matches the existing convention on most posts. |
 | `recolor_docx_cells.py` fails (e.g., file locked by Word) | Posts exist in Odoo but docx unchanged. Warn user to close Word and rerun — the duplicate-title pre-flight keeps a rerun idempotent. |
-| Step 3 publish fails: shell quoting error (exit 2, "unexpected EOF while looking for matching `'`") | **Use `orchestrate_publish.py` helper script** (handles OS detection + temp file management automatically) or manually write JSON to `tempfile.gettempdir()/rc_article_<idx>.json`, then pipe: `python publish_blog_post.py < <temp_file>`. Never use `echo '...' \| python ...` — shell single-quotes break on apostrophes in body text. See Step 3 for details. |
+| Step 3 publish fails (file not found, write error, etc.) | Verify the temp file was created successfully and the path passed to `publish_blog_post.py` is correct (use absolute paths). Check that the temp directory is writable. If the docx itself has invalid data, Agent B would have failed earlier. |
 | Credentials not found | Scripts raise `CredentialsNotFound`. Tell the user to set the plugin's userConfig (ODOO_URL, ODOO_DB, ODOO_UID, ODOO_PASSWORD) via `/plugin config`, or export those env vars in their shell. |
 
 ## Examples
