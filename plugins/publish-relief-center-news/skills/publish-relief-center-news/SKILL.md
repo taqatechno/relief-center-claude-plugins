@@ -100,13 +100,13 @@ If the user agrees, run the interactive collection flow from Case B. The saver w
 
 ### Step 1 — Dispatch Agent A (docx inspector)
 
-Use the `Agent` tool with `subagent_type: general-purpose`. Its job: find unpublished articles in the docx. Each article is its own **table** with six labeled field rows (Title, Author, Date, Country, Body, Status) — the v6 template structure. Publication state is encoded on the Status row's content-cell fill: white / no fill = unpublished, purple = AI-published, green = manually published. Pass this prompt verbatim (substitute `<docx-path>`):
+Use the `Agent` tool with `subagent_type: general-purpose`. Its job: find unpublished articles in the docx. Each article is its own **table** with six labeled field rows (Title, Author, Date, Country, Body, Status). Publication state is encoded in the Status row text: "Unpublished" means the article needs publishing. Pass this prompt verbatim (substitute `<docx-path>`):
 
 > Your task: identify unpublished articles in a Relief Center news .docx file.
 >
 > 1. Run: `python <SKILL_DIR>/scripts/inspect_docx.py "<docx-path>"`
-> 2. Parse the JSON output — a list of article dicts, each with pre-extracted fields: `article_index`, `table_index`, `title_en`, `title_ar`, `author_en`, `author_ar`, `date_en`, `date_ar`, `country_en`, `country_ar`, `body_en`, `body_ar`, `status_en`, `status_ar`, `status_fill`, `is_unpublished`, `status_en_cell_index`, `status_ar_cell_index`, `article_cell_indices` (list of every `<w:tc>` index inside the article's table, in document order — used by the recolor step to tint the whole article).
-> 3. Filter to entries where `is_unpublished == true` (the Status row's content cell has no fill or is explicit white).
+> 2. Parse the JSON output — a list of article dicts, each with pre-extracted fields: `article_index`, `title_en`, `title_ar`, `author_en`, `date_en`, `country_en`, `body_en`, `body_ar`, `status_en`, `status_en_cell_index`, `status_ar_cell_index`, `article_cell_indices` (list of every `<w:tc>` index inside the article's table, in document order — used by the recolor step to tint the whole article).
+> 3. Filter to entries where `status_en` equals "Unpublished" (the article has not yet been published).
 > 4. Return the filtered list **as-is** — don't strip or rename any fields, downstream steps need them. If no articles match, return `[]`.
 >
 > Do NOT publish anything; your only job is discovery.
@@ -115,7 +115,7 @@ Parse the returned list. If it's empty, tell the user "No unpublished articles i
 
 ### Step 2 — Dispatch Agent B (field formatter) per article, **in parallel**
 
-With v6 structured output from Agent A, Agent B's job is much lighter than before: fields are already extracted, so Agent B only formats body HTML, parses the date string, and resolves author + country against Odoo. Launch one `Agent` tool call per unpublished article **in the same message** so they run concurrently. Each gets `subagent_type: general-purpose`. For each article, pass this prompt (substitute the per-article values from Agent A's output):
+With structured output from Agent A, Agent B's job is much lighter than before: fields are already extracted, so Agent B only formats body HTML, parses the date string, and resolves author + country against Odoo. Launch one `Agent` tool call per unpublished article **in the same message** so they run concurrently. Each gets `subagent_type: general-purpose`. For each article, pass this prompt (substitute the per-article values from Agent A's output):
 
 > Your task: format one pre-extracted Relief Center news article for Odoo publishing. Fields are already structured — you just need to build bilingual body HTML, parse the date, and resolve author + country against Odoo.
 >
@@ -124,7 +124,6 @@ With v6 structured output from Agent A, Agent B's job is much lighter than befor
 > - `title_en`: `<title_en>`
 > - `title_ar`: `<title_ar>`
 > - `author_en`: `<author_en>`  (e.g. "Dr. Ola Alkahlout")
-> - `author_ar`: `<author_ar>`  (e.g. "د. علا الكحلوت")
 > - `date_en`: `<date_en>`  (e.g. "15 April 2026")
 > - `country_en`: `<country_en>`  (e.g. "International" or "Yemen")
 > - `body_en`: `<body_en>`  (plain text, paragraphs separated by `\n`)

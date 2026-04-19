@@ -1,57 +1,41 @@
 """
-Extract structured article data from a v6 Relief Center news .docx.
+Extract article data from a Relief Center news .docx for publishing.
 
-Template shape (v6):
+Template shape:
 
-    Each article is its own table with 6 labeled field rows — the label
-    text in cell[0] identifies the field, cell[1] is the English value,
-    cell[2] is the Arabic value. A monthly docx holds one such table
-    per article.
+    Each article is its own table with 6 labeled field rows:
 
       cell[0] label   cell[1] EN              cell[2] AR
-      -------------   --------------------    --------------------
       "Title"         English title           Arabic title
-      "Author"        Author name EN          Author name AR
-      "Date"          "15 April 2026"         "15 أبريل 2026"
-      "Country"       "International"         "دولي"
+      "Author"        Author name             (not used)
+      "Date"          "15 April 2026"         (not used)
+      "Country"       "International"         (not used)
       "Body"          English body text       Arabic body text
-      "Status"        "Unpublished"           ""
+      "Status"        "Unpublished"           (not used)
 
-    Publication state is encoded in the Status row's text content: if the
-    English status cell reads "Unpublished", the article is unpublished.
-    If it reads "Published", it's published and the table should be skipped.
-    The Status cell's fill color is just for visualization.
+    Publication state is determined by the Status EN cell text:
+    "Unpublished" → article needs publishing. "Published" → skip.
 
 The script walks every <w:tbl> in the document. A table is only treated
-as a v6 article when all six labeled rows are present (structural tables
-like headers or cover pages are ignored automatically).
+as an article when all six labeled rows are present (structural tables
+are ignored). The first valid table (template) is skipped.
 
-Output: JSON list, one element per valid v6 article, shape:
+Output: JSON list, one element per article, shape:
 
     {
-      "article_index": 0,           # 0-based, sequential among valid articles
-      "table_index": 0,             # position among all <w:tbl> in the docx
+      "article_index": 0,           # 0-based, sequential
       "title_en": "...",
       "title_ar": "...",
       "author_en": "...",
-      "author_ar": "...",
       "date_en": "15 April 2026",
-      "date_ar": "15 أبريل 2026",
       "country_en": "International",
-      "country_ar": "دولي",
       "body_en": "full body text with \\n between paragraphs",
       "body_ar": "full Arabic body text",
-      "status_en": "Unpublished",
-      "status_ar": "",
-      "status_fill": "FFFFFF",      # EN status cell fill, uppercased, or ""
-      "is_unpublished": true,       # derived from status_fill
-      "status_en_cell_index": 21,   # document-order w:tc index of EN status cell
-      "status_ar_cell_index": 22    # document-order w:tc index of AR status cell
+      "status_en": "Unpublished",    # "Unpublished" or "Published"
+      "status_en_cell_index": 21,    # document-order w:tc index of EN status cell
+      "status_ar_cell_index": 22,    # document-order w:tc index of AR status cell
+      "article_cell_indices": [...]  # all w:tc indices in this table for recoloring
     }
-
-`status_en_cell_index` / `status_ar_cell_index` are the cells that
-`recolor_docx_cells.py` should flip white → purple once a post is
-published, so the docx stays in sync with reality.
 
 Usage:
     python inspect_docx.py <docx_path>
@@ -87,16 +71,6 @@ REQUIRED_KEYS = set(FIELD_LABELS.values())
 UNPUBLISHED_STATUS = "Unpublished"
 
 
-def _cell_fill(cell: ET.Element) -> str | None:
-    tc_pr = cell.find(f"{W}tcPr")
-    if tc_pr is None:
-        return None
-    shd = tc_pr.find(f"{W}shd")
-    if shd is None:
-        return None
-    return shd.get(f"{W}fill")
-
-
 def _cell_text(cell: ET.Element) -> str:
     """All paragraphs in a cell, joined by \\n. Preserves inline run
     splits within a paragraph."""
@@ -130,7 +104,7 @@ def _extract_article(
         fields[f"{key}_ar"] = _cell_text(cells[2]).strip()
         field_cells[key] = (cells[1], cells[2])
 
-    # A table isn't a v6 article unless every labeled row is present.
+    # A table isn't an article unless every labeled row is present.
     # Skipping partial/structural tables silently keeps the extractor
     # robust to cover pages, tables of contents, etc. that might share
     # the document.
@@ -138,7 +112,11 @@ def _extract_article(
         return None
 
     status_en, status_ar = field_cells["status"]
-    status_fill = (_cell_fill(status_en) or "").upper()
+
+    # For bilingual content, we extract both EN and AR
+    # But for metadata (author, date, country), only EN is used downstream
+    body_ar_text = _cell_text(field_cells["body"][1]).strip()
+    title_ar_text = _cell_text(field_cells["title"][1]).strip()
 
     # Every <w:tc> inside this table — in document order — so the
     # recolor step can flip the whole article table's fill in one call
@@ -150,10 +128,14 @@ def _extract_article(
 
     return {
         "article_index": 0,  # caller renumbers across valid articles
-        "table_index": table_idx,
-        **fields,
-        "status_fill": status_fill,
-        "is_unpublished": fields["status_en"] == UNPUBLISHED_STATUS,
+        "title_en": fields["title_en"],
+        "title_ar": title_ar_text,
+        "author_en": fields["author_en"],
+        "date_en": fields["date_en"],
+        "country_en": fields["country_en"],
+        "body_en": fields["body_en"],
+        "body_ar": body_ar_text,
+        "status_en": fields["status_en"],
         "status_en_cell_index": cell_index_map[id(status_en)],
         "status_ar_cell_index": cell_index_map[id(status_ar)],
         "article_cell_indices": article_cell_indices,
