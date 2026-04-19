@@ -13,6 +13,8 @@ The skill runs as a **multi-agent orchestration** — the main session is the or
 
 All Odoo access goes through XML-RPC via this skill's own scripts (`scripts/odoo_client.py`, `scripts/odoo_search.py`, `scripts/publish_blog_post.py`). The skill does **not** use the `odoo-mcp-nextjs` MCP — its `createRecords` is broken, and its `smartSearch` silently drops the language context needed for Arabic title translations. Stick to the XML-RPC scripts.
 
+**Cross-platform support:** The skill includes OS detection (`orchestrate_publish.py` helper script) for safe temp file handling on Windows, Linux, and macOS. This avoids shell quoting issues that break on apostrophes in article body text.
+
 ## When to use
 
 - User runs `/publish-relief-center-news <docx-path>`
@@ -170,11 +172,52 @@ With v6 structured output from Agent A, Agent B's job is much lighter than befor
 
 ### Step 3 — Publish each article via XML-RPC
 
-For each Agent B result, you hold the article's `article_index`, `status_en_cell_index`, `status_ar_cell_index`, and `article_cell_indices` from Agent A's output in Step 1. Strip `article_index` from the Agent B dict (publish_blog_post.py doesn't expect it), and pipe the rest to the publisher:
+For each Agent B result, you hold the article's `article_index`, `status_en_cell_index`, `status_ar_cell_index`, and `article_cell_indices` from Agent A's output in Step 1. Strip `article_index` from the Agent B dict (publish_blog_post.py doesn't expect it), then publish via file redirection (never via `echo` pipe, which breaks on apostrophes in body text).
 
-```bash
-echo '<field_dict_json_without_article_index>' | python <SKILL_DIR>/scripts/publish_blog_post.py
+**CRITICAL: Detect OS and use appropriate temp directory:**
+
+#### On Windows (or when running bash/WSL on Windows):
+```python
+import tempfile
+import json
+import subprocess
+import os
+
+# Get OS-appropriate temp directory
+temp_dir = tempfile.gettempdir()  # e.g., C:\Users\...\AppData\Local\Temp on Windows
+temp_file = os.path.join(temp_dir, f'rc_article_{article_index}.json')
+
+# Write JSON to temp file using Python (handles encoding properly)
+with open(temp_file, 'w', encoding='utf-8') as f:
+    json.dump(field_dict, f)
+
+# Pipe from file (works on all platforms)
+with open(temp_file, 'r', encoding='utf-8') as f:
+    result = subprocess.run(
+        [sys.executable, '<SKILL_DIR>/scripts/publish_blog_post.py'],
+        stdin=f,
+        capture_output=True,
+        text=True
+    )
+
+# Clean up
+os.remove(temp_file)
+publish_result = json.loads(result.stdout)
 ```
+
+#### On Linux/macOS (or in a pure POSIX environment):
+```bash
+# Still use temp file approach — it's safer and more portable
+python -c "import json; json.dump({...}, open('/tmp/rc_article_<idx>.json', 'w'))" && \
+python <SKILL_DIR>/scripts/publish_blog_post.py < /tmp/rc_article_<idx>.json && \
+rm /tmp/rc_article_<idx>.json
+```
+
+**Why the temp file approach:**
+- Shell `echo '...' | python` breaks on apostrophes in article body text (e.g., "donors' awareness", "system's ability")
+- `tempfile.gettempdir()` returns the OS-appropriate temp directory (Windows or POSIX)
+- File redirection via `<` works identically on Windows bash (Git Bash, WSL) and POSIX
+- `publish_blog_post.py` already reads `sys.stdin.buffer` as UTF-8 — file redirection works perfectly
 
 Parse the JSON on stdout:
 - `status: "created"` or `status: "partial"` (AR translation warning) → success; queue every index in `article_cell_indices` for recoloring, and queue `status_en_cell_index` for the `Unpublished → Published` text rewrite
@@ -222,6 +265,7 @@ Read `references/field_mapping.md` for:
 | Agent C (author resolver) finds no match ≥60% | Returns `author_id: 79` (current user's partner); orchestrator proceeds normally. |
 | Agent D (country resolver) finds no confident matches | Returns `country_ids: []`; matches the existing convention on most posts. |
 | `recolor_docx_cells.py` fails (e.g., file locked by Word) | Posts exist in Odoo but docx unchanged. Warn user to close Word and rerun — the duplicate-title pre-flight keeps a rerun idempotent. |
+| Step 3 publish fails: shell quoting error (exit 2, "unexpected EOF while looking for matching `'`") | **Use `orchestrate_publish.py` helper script** (handles OS detection + temp file management automatically) or manually write JSON to `tempfile.gettempdir()/rc_article_<idx>.json`, then pipe: `python publish_blog_post.py < <temp_file>`. Never use `echo '...' \| python ...` — shell single-quotes break on apostrophes in body text. See Step 3 for details. |
 | Credentials not found | Scripts raise `CredentialsNotFound`. Tell the user to set the plugin's userConfig (ODOO_URL, ODOO_DB, ODOO_UID, ODOO_PASSWORD) via `/plugin config`, or export those env vars in their shell. |
 
 ## Examples
