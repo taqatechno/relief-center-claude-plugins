@@ -17,10 +17,10 @@ Template shape (v6):
       "Body"          English body text       Arabic body text
       "Status"        "Unpublished"           ""
 
-    Publication state is encoded in the Status row's content-cell fill:
-    white (#FFFFFF or no fill) means unpublished, any non-white fill
-    (green = manually published, purple = published by this skill)
-    means published and the table should be skipped.
+    Publication state is encoded in the Status row's text content: if the
+    English status cell reads "Unpublished", the article is unpublished.
+    If it reads "Published", it's published and the table should be skipped.
+    The Status cell's fill color is just for visualization.
 
 The script walks every <w:tbl> in the document. A table is only treated
 as a v6 article when all six labeled rows are present (structural tables
@@ -83,10 +83,8 @@ FIELD_LABELS: dict[str, str] = {
 
 REQUIRED_KEYS = set(FIELD_LABELS.values())
 
-# Status row cell fills that mean "unpublished" — no fill, empty string,
-# or explicit white. Anything else (green, purple, etc.) means the
-# article is already published.
-UNPUBLISHED_FILLS = {"", "FFFFFF"}
+# Status text that means "unpublished"
+UNPUBLISHED_STATUS = "Unpublished"
 
 
 def _cell_fill(cell: ET.Element) -> str | None:
@@ -155,7 +153,7 @@ def _extract_article(
         "table_index": table_idx,
         **fields,
         "status_fill": status_fill,
-        "is_unpublished": status_fill in UNPUBLISHED_FILLS,
+        "is_unpublished": fields["status_en"] == UNPUBLISHED_STATUS,
         "status_en_cell_index": cell_index_map[id(status_en)],
         "status_ar_cell_index": cell_index_map[id(status_ar)],
         "article_cell_indices": article_cell_indices,
@@ -176,11 +174,17 @@ def inspect(docx_path: Path) -> list[dict]:
     }
 
     articles: list[dict] = []
+    article_count = 0
     for table_idx, tbl in enumerate(root.iter(f"{W}tbl")):
         article = _extract_article(tbl, table_idx, cell_index_map)
         if article is not None:
+            # Skip the first article table (template)
+            if article_count == 0:
+                article_count += 1
+                continue
             article["article_index"] = len(articles)
             articles.append(article)
+            article_count += 1
     return articles
 
 
