@@ -1,5 +1,5 @@
 """
-Extract article data from a Relief Center news .docx for publishing.
+Extract unpublished articles from a Relief Center news .docx.
 
 Template shape:
 
@@ -14,16 +14,17 @@ Template shape:
       "Status"        "Unpublished"           (not used)
 
     Publication state is determined by the Status EN cell text:
-    "Unpublished" → article needs publishing. "Published" → skip.
+    "Unpublished" → article is unpublished (included in output).
+    "Published" → article is already published (filtered out).
 
 The script walks every <w:tbl> in the document. A table is only treated
 as an article when all six labeled rows are present (structural tables
 are ignored). The first valid table (template) is skipped.
 
-Output: JSON list, one element per article, shape:
+Output: JSON list of unpublished articles only, one element per article:
 
     {
-      "article_index": 0,           # 0-based, sequential
+      "article_index": 0,           # 0-based, sequential (renumbered after filtering)
       "title_en": "...",
       "title_ar": "...",
       "author_en": "...",
@@ -31,7 +32,7 @@ Output: JSON list, one element per article, shape:
       "country_en": "International",
       "body_en": "full body text with \\n between paragraphs",
       "body_ar": "full Arabic body text",
-      "status_en": "Unpublished",    # "Unpublished" or "Published"
+      "status_en": "Unpublished",
       "status_en_cell_index": 21,    # document-order w:tc index of EN status cell
       "status_ar_cell_index": 22,    # document-order w:tc index of AR status cell
       "article_cell_indices": [...]  # all w:tc indices in this table for recoloring
@@ -87,7 +88,7 @@ def _extract_article(
     table_idx: int,
     cell_index_map: dict[int, int],
 ) -> dict | None:
-    """Pull a v6 article out of a table, or return None if the table
+    """Pull an article out of a table, or return None if the table
     doesn't have the full set of six labeled field rows."""
     fields: dict[str, str] = {}
     field_cells: dict[str, tuple[ET.Element, ET.Element]] = {}
@@ -118,10 +119,14 @@ def _extract_article(
     body_ar_text = _cell_text(field_cells["body"][1]).strip()
     title_ar_text = _cell_text(field_cells["title"][1]).strip()
 
+    # Check if article is unpublished before extracting indices
+    status_en_text = fields["status_en"].strip()
+    if status_en_text != UNPUBLISHED_STATUS:
+        return None
+
     # Every <w:tc> inside this table — in document order — so the
     # recolor step can flip the whole article table's fill in one call
-    # rather than only the Status cells. This is the v6 convention:
-    # "article published" = the entire article's table is tinted.
+    # rather than only the Status cells.
     article_cell_indices = [
         cell_index_map[id(tc)] for tc in tbl.iter(f"{W}tc")
     ]
@@ -135,7 +140,7 @@ def _extract_article(
         "country_en": fields["country_en"],
         "body_en": fields["body_en"],
         "body_ar": body_ar_text,
-        "status_en": fields["status_en"],
+        "status_en": status_en_text,
         "status_en_cell_index": cell_index_map[id(status_en)],
         "status_ar_cell_index": cell_index_map[id(status_ar)],
         "article_cell_indices": article_cell_indices,
