@@ -226,7 +226,7 @@ Parse the JSON on stdout:
 
 ### Step 4 — Recolor the article table and switch its Status to "Published"
 
-After all publishes complete, call `recolor_docx_cells.py` once with every queued cell index. The v6 convention for "article published" is that the **entire article table** is tinted purple — not just the Status row — so the whole article reads as done at a glance. In the same call, use `--set-text` to flip the Status cell's text from `Unpublished` to `Published`:
+After all publishes complete, call `recolor_docx_cells.py` once with every queued cell index. The convention for "article published" is that the **entire article table** is tinted purple — not just the Status row — so the whole article reads as done at a glance. In the same call, use `--set-text` to flip the Status cell's text from `Unpublished` to `Published`:
 
 ```bash
 python <SKILL_DIR>/scripts/recolor_docx_cells.py "<docx-path>" \
